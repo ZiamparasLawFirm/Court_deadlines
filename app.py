@@ -51,11 +51,10 @@ html, body, [data-testid="stAppViewContainer"] * { font-size: 20px !important; }
 h1.big-title { font-size: 2.6rem !important; line-height: 1.18 !important; margin: 0 0 0.25rem 0 !important; }
 p.subnote { font-size: 1.0rem !important; color: #444; margin: 0 0 1.0rem 0 !important; }
 
-/* Default: make Streamlit buttons slightly smaller than base text */
+/* Default buttons moderately sized (tables, PDF, etc.) */
 .stButton > button {
   font-size: 16px !important;
-  padding-top: 0.65rem; padding-bottom: 0.65rem;
-  padding-left: 1.2rem; padding-right: 1.2rem;
+  padding: 0.50rem 0.90rem !important;
   font-weight: 600;
   width: 100%;
 }
@@ -64,11 +63,20 @@ p.subnote { font-size: 1.0rem !important; color: #444; margin: 0 0 1.0rem 0 !imp
 button[data-testid="baseButton-primary"] {
   font-size: 20px !important;
   font-weight: 800 !important;
-  padding-top: 0.75rem !important; padding-bottom: 0.75rem !important;
-  padding-left: 1.6rem !important; padding-right: 1.6rem !important;
+  padding: 0.75rem 1.6rem !important;
 }
 
-hr { margin: 0.7rem 0; }
+/* Tiny buttons ONLY for the per-row controls: smaller font, tighter padding, content width */
+.row-btn-col .stButton > button {
+  font-size: 10px !important;           /* requested tiny size */
+  padding: 0.20rem 0.40rem !important;   /* tighter boxes */
+  font-weight: 600 !important;
+  width: auto !important;                /* don't stretch to column width */
+  white-space: nowrap !important;        /* keep in one line */
+  line-height: 1.1 !important;
+}
+
+hr { margin: 0.5rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -130,10 +138,12 @@ if rows is None or len(rows) == 0:
     st.info("Πατήστε **Υπολογισμός** για να υπολογιστούν οι προθεσμίες.")
 else:
     st.success("Υπολογισμός ολοκληρώθηκε.")
-    # Uppercase headers as requested
-    hdr = st.columns([5, 3])
+    # Uppercase headers
+    hdr = st.columns([6, 2, 3, 2])
     with hdr[0]: st.markdown("**ΕΝΕΡΓΕΙΕΣ**")
-    with hdr[1]: st.markdown("**ΠΡΟΘΕΣΜΙΕΣ**")
+    with hdr[1]: st.markdown("&nbsp;", unsafe_allow_html=True)
+    with hdr[2]: st.markdown("**ΠΡΟΘΕΣΜΙΕΣ**")
+    with hdr[3]: st.markdown("&nbsp;", unsafe_allow_html=True)
 
     # Helper texts
     def _explain_calc_text(it, rows_all):
@@ -194,30 +204,31 @@ else:
     rows_full_for_calc = DeadlineCalculator(ctx_tmp).compute()
 
     for i, it in enumerate(rows):
-        dcols = st.columns([5, 3])
-        with dcols[0]:
+        # One-line row: Action | CalcBtn | Deadline | LawBtn
+        row = st.columns([6, 2, 3, 2], vertical_alignment="center")
+        with row[0]:
             st.markdown(f"**{i+1}. {it.action}**")
-        with dcols[1]:
-            st.markdown(f"**{it.weekday} {it.deadline:%d-%m-%Y}**")
-
-        # Row buttons (now small fonts by CSS; left/right alignment with wide columns)
-        outer = st.columns([0.0001, 6, 0.5, 6, 0.0001])
-        calc_key = f"show_calc_{i}"
-        law_key = f"show_law_{i}"
-
-        with outer[1]:
+        with row[1]:
+            # Scoped tiny-button style
+            st.markdown('<div class="row-btn-col">', unsafe_allow_html=True)
             if st.button("Τρόπος Υπολογισμού", key=f"calc_btn_{i}"):
-                st.session_state[calc_key] = not st.session_state.get(calc_key, False)
-        with outer[3]:
+                st.session_state[f"show_calc_{i}"] = not st.session_state.get(f"show_calc_{i}", False)
+            st.markdown('</div>', unsafe_allow_html=True)
+        with row[2]:
+            st.markdown(f"**{it.weekday} {it.deadline:%d-%m-%Y}**")
+        with row[3]:
+            st.markdown('<div class="row-btn-col">', unsafe_allow_html=True)
             if st.button("Νομική Βάση", key=f"law_btn_{i}"):
-                st.session_state[law_key] = not st.session_state.get(law_key, False)
+                st.session_state[f"show_law_{i}"] = not st.session_state.get(f"show_law_{i}", False)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        if st.session_state.get(calc_key, False) or st.session_state.get(law_key, False):
-            full = st.container()
-            with full:
-                if st.session_state.get(calc_key, False):
+        # Reserve the next line for expandable content
+        if st.session_state.get(f"show_calc_{i}", False) or st.session_state.get(f"show_law_{i}", False):
+            detail = st.container()
+            with detail:
+                if st.session_state.get(f"show_calc_{i}", False):
                     st.info(_explain_calc_text(it, rows_full_for_calc), icon="ℹ️")
-                if st.session_state.get(law_key, False):
+                if st.session_state.get(f"show_law_{i}", False):
                     st.code(_law_text(it), language="markdown")
         st.markdown("<hr/>", unsafe_allow_html=True)
 
