@@ -1,379 +1,446 @@
 # -*- coding: utf-8 -*-
-import os, sys, shutil
-from datetime import date, timedelta
-import streamlit as st
+import os
+import io
+import shutil
+from datetime import date, datetime, timedelta
 
-# ΠΡΩΤΗ κλήση Streamlit
-st.set_page_config(page_title="Greek Civil Deadlines (PyCharm)", page_icon="⚖️", layout="centered")
+from dash import Dash, html, dcc, Output, Input, State, MATCH, callback, no_update
+import dash_bootstrap_components as dbc
 
-from deadlines import DeadlineCalculator, DeadlineItem
+# =========================================================
+#  Base path: ρίζα για τοπικό, υπο-μονοπάτι για Plesk
+#  Σε Plesk ορίζεις env var: DEADLINES_BASE_PATH=/deadlines/
+# =========================================================
+BASE_PATH = os.environ.get("DEADLINES_BASE_PATH", "/")
+
+# -----------------------------
+# Dash (WSGI πάνω σε Flask)
+# -----------------------------
+THEME = dbc.themes.FLATLY  # καθαρό, επαγγελματικό
+
+app = Dash(
+    __name__,
+    requests_pathname_prefix=BASE_PATH,
+    routes_pathname_prefix=BASE_PATH,
+    external_stylesheets=[THEME]
+)
+server = app.server  # για Plesk/Passenger
+
+# -----------------------------
+# ΔΙΚΕΣ ΣΟΥ ΒΙΒΛΙΟΘΗΚΕΣ deadlines
+# -----------------------------
+from deadlines import DeadlineCalculator
 from deadlines.rules import RuleContext
 from deadlines.pdf import GREEK_FONT_PATH
 
-# -----------------------------
-# Greek-capable font for PDF
-# -----------------------------
-def _ensure_greek_font_available():
-    assets_dir = os.path.join(os.path.dirname(__file__), "assets")
-    os.makedirs(assets_dir, exist_ok=True)
-    target = GREEK_FONT_PATH
-    if os.path.exists(target):
-        return
-    candidates = [
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Unicode MS.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/System/Library/Fonts/Supplemental/Tahoma.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "/Library/Fonts/Arial Unicode MS.ttf",
-        "/Library/Fonts/Arial.ttf",
-        "/Library/Fonts/Tahoma.ttf",
-        os.path.expanduser("~/Library/Fonts/Arial Unicode.ttf"),
-        os.path.expanduser("~/Library/Fonts/Arial.ttf"),
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            try:
-                shutil.copyfile(c, target)
-                break
-            except Exception:
-                pass
+# ==========================
+#  Utils
+# ==========================
+def ensure_greek_font_available():
+    """Εξασφαλίζει TTF με ελληνικά για το PDF (deadlines.pdf περιμένει GREEK_FONT_PATH)."""
+    try:
+        os.makedirs(os.path.dirname(GREEK_FONT_PATH), exist_ok=True)
+        if os.path.exists(GREEK_FONT_PATH):
+            return
+        candidates = [
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode MS.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Supplemental/Tahoma.ttf",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/Library/Fonts/Arial Unicode MS.ttf",
+            "/Library/Fonts/Arial.ttf",
+            "/Library/Fonts/Tahoma.ttf",
+            os.path.expanduser("~/Library/Fonts/Arial Unicode.ttf"),
+            os.path.expanduser("~/Library/Fonts/Arial.ttf"),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                try:
+                    shutil.copyfile(c, GREEK_FONT_PATH)
+                    break
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
-_ensure_greek_font_available()
+WEEKDAYS_GR = ["Δευτέρα","Τρίτη","Τετάρτη","Πέμπτη","Παρασκευή","Σάββατο","Κυριακή"]
 
-# -----------------------------
-# Global CSS (με creative "chip" κουμπιά)
-# -----------------------------
-st.markdown("""
-<style>
-html, body, [data-testid="stAppViewContainer"] * { font-size: 20px !important; }
+def weekday_gr(dt: date) -> str:
+    return WEEKDAYS_GR[dt.weekday()]
 
-/* Τίτλοι */
-h1.big-title { font-size: 2.4rem !important; line-height: 1.18 !important; margin: 0 0 0.25rem 0 !important; }
-p.subnote { font-size: 1.0rem !important; color: #444; margin: 0 0 1.0rem 0 !important; }
-
-/* Default buttons (π.χ. PDF) */
-.stButton > button {
-  font-size: 16px !important;
-  padding: 0.50rem 0.90rem !important;
-  font-weight: 600;
-  width: 100%;
-}
-
-/* Κύριο CTA */
-button[data-testid="baseButton-primary"] {
-  font-size: 20px !important;
-  font-weight: 800 !important;
-  padding: 0.75rem 1.6rem !important;
-}
-
-/* === Creative "Chip" buttons για τις γραμμές === */
-.chip-col { display:flex; align-items:center; }
-.chip-col--left { justify-content:flex-start; }
-.chip-col--right { justify-content:flex-end; }
-
-/* Βασικό στυλ κουμπιών-πινακίδων */
-.chip-col .stButton > button {
-  width: auto !important;
-  font-size: 11px !important;         /* μικρότερα από τη γραμμή */
-  font-weight: 800 !important;
-  letter-spacing: .2px;
-  padding: 0.22rem 0.55rem !important; /* compact */
-  border-radius: 9999px !important;    /* full pill */
-  border: 1px solid #d0d7de !important;
-  background: linear-gradient(180deg,#ffffff,#f6f8fa) !important;
-  color: #0a0a0a !important;
-  box-shadow: 0 1px 0 rgba(0,0,0,.04), inset 0 -1px 0 rgba(0,0,0,.03) !important;
-  transition: transform .08s ease, box-shadow .15s ease, background .15s ease;
-  white-space: nowrap !important;
-  line-height: 1.1 !important;
-}
-
-/* Hover effects */
-.chip-col .stButton > button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(0,0,0,.10);
-}
-
-/* Εξειδίκευση ανά κουμπί */
-.chip-calc .stButton > button {
-  border-color: #b6d3ff !important;
-  background: linear-gradient(180deg,#f7fbff,#eaf3ff) !important;
-}
-.chip-calc .stButton > button:hover {
-  background: linear-gradient(180deg,#e9f3ff,#d7e9ff) !important;
-}
-
-.chip-law .stButton > button {
-  border-color: #d1c4f3 !important;
-  background: linear-gradient(180deg,#fbf9ff,#f3f0ff) !important;
-}
-.chip-law .stButton > button:hover {
-  background: linear-gradient(180deg,#eee9ff,#e5deff) !important;
-}
-
-/* Κατάσταση ενεργό (όταν είναι ανοικτή η επεξήγηση) */
-.chip-calc.active .stButton > button {
-  background: linear-gradient(180deg,#3b82f6,#1d4ed8) !important;
-  color: #fff !important;
-  border-color: #1e40af !important;
-}
-.chip-law.active .stButton > button {
-  background: linear-gradient(180deg,#8b5cf6,#6d28d9) !important;
-  color: #fff !important;
-  border-color: #5b21b6 !important;
-}
-
-/* Διακριτικές ετικέτες emoji μέσα στο κουμπί */
-.chip-col .stButton > button span.emoji {
-  filter: saturate(120%);
-  margin-right: .35rem;
-}
-
-/* Διαχωριστικές γραμμές του πίνακα */
-hr { margin: 0.5rem 0; }
-</style>
-""", unsafe_allow_html=True)
-
-# -----------------------------
-# Title + subnote
-# -----------------------------
-st.markdown('<h1 class="big-title">⚖️ Υπολογισμός Προθεσμιών ΚΠολΔ — Τακτική & Μικροδιαφορές</h1>', unsafe_allow_html=True)
-st.markdown('<p class="subnote">(Με το νομοθετικό πλαίσιο μέχρι 31-12-2025)</p>', unsafe_allow_html=True)
-
-with st.expander("Πληροφορίες", expanded=False):
-    st.markdown("""
-- **Αναστολή Αυγούστου (1–31/8)** και, αν υπάρχει **Δημόσιο/ΝΠΔΔ**, επιπλέον **1/7–15/9**.
-- Μεταφορά λήξης που πέφτει **Σ/Κ** στην **επόμενη εργάσιμη**.
-- **Τακτική**: 215(30/60), 237(90/120 από λήξη επίδοσης +15), 238(60/90 & 120/180 +15).
-- **Μικροδιαφορές**: 468 → 10/30, μετά 20 + 5· Παρεμπίπτουσες 20/40 + 30/50 + 5.
-- Για ελληνικές ονομασίες μηνών/ημερών και εβδομάδα που **ξεκινά Δευτέρα**, το ημερολόγιο του browser καθορίζει τη γλώσσα/έναρξη εβδομάδας.
-""")
-
-# -----------------------------
-# Helpers
-# -----------------------------
-def _next_monday(d: date) -> date:
-    while d.weekday() >= 5:  # 5=Σάββατο, 6=Κυριακή
+def next_monday(d: date) -> date:
+    while d.weekday() >= 5:  # 5=Σ, 6=Κ
         d += timedelta(days=1)
     return d
 
-_default_filing = _next_monday(date.today())
+def parse_date_str(s: str) -> date:
+    return datetime.strptime(s, "%Y-%m-%d").date()
 
 # -----------------------------
-# Date widget state orchestration (χωρίς conflicts)
+# Creative CSS -> assets/inline.css
 # -----------------------------
-# 1) Πρώτη φορά: αρχικοποίηση πριν δημιουργηθεί το widget
-if "filing_date_widget" not in st.session_state:
-    st.session_state["filing_date_widget"] = _default_filing
+BRAND_CSS = r"""
+:root{
+  /* Προσαρμογή για το ziamparas.gr – άλλαξε εδώ αν έχεις συγκεκριμένα hex */
+  --brand-primary: #1f3b73;    /* deep blue */
+  --brand-primary-dark: #152a54;
+  --brand-accent:  #5fa8ff;    /* light accent */
+  --brand-muted:   #f2f6fc;    /* light background */
+}
 
-# 2) Αν εκκρεμεί διόρθωση από προηγούμενο run (επιλέχθηκε Σ/Κ):
-if st.session_state.get("pending_adjust", False):
-    adj = st.session_state.get("pending_adjust_value", None)
-    if isinstance(adj, date):
-        st.session_state["filing_date_widget"] = adj
-        st.session_state["filing_adjusted_note"] = f"Επιλέχθηκε Σ/Κ. Η ημερομηνία κατάθεσης μεταφέρθηκε αυτόματα στη **Δευτέρα {adj:%d-%m-%Y}**."
-    st.session_state["pending_adjust"] = False
-    st.session_state.pop("pending_adjust_value", None)
+/* Βασικά */
+body { font-size: 18px; background: #ffffff; }
+.container-fluid { max-width: 1280px; }
 
-# -----------------------------
-# Inputs (παλιός datepicker, ΧΩΡΙΣ value=..., μόνο key)
-# -----------------------------
-c1, c2 = st.columns(2)
-with c1:
-    abroad = st.selectbox("1) Εναγόμενος εξωτερικού/αγνώστου;", ["Όχι","Ναι"])=="Ναι"
-    public = st.selectbox("2) Υπάρχει Δημόσιο/ΝΠΔΔ διάδικος;", ["Όχι","Ναι"])=="Ναι"
-with c2:
-    procedure = st.selectbox("3) Διαδικασία;", ["Τακτική","Μικροδιαφορές"])
-    filing = st.date_input(
-        "4) Ημερομηνία κατάθεσης αγωγής",
-        format="DD/MM/YYYY",
-        key="filing_date_widget"  # ΔΕΝ δίνουμε value=...
-    )
+/* Bootstrap primary override */
+.btn-primary {
+  background-color: var(--brand-primary) !important;
+  border-color: var(--brand-primary) !important;
+}
+.btn-primary:hover {
+  background-color: var(--brand-primary-dark) !important;
+  border-color: var(--brand-primary-dark) !important;
+}
 
-# 3) Αν επιλέχθηκε Σ/Κ, προγραμμάτισε Δευτέρα για το επόμενο run ΧΩΡΙΣ να πειράξεις το widget key τώρα
-if filing.weekday() >= 5:
-    adjusted = _next_monday(filing)
-    if adjusted != filing:
-        st.session_state["pending_adjust"] = True
-        st.session_state["pending_adjust_value"] = adjusted
-        st.rerun()
+/* Κεφαλίδα */
+.app-title { font-weight: 800; line-height: 1.15; letter-spacing: .2px; }
+.app-subtitle { font-size: 0.98rem; color:#4b5563; margin-top:-8px; margin-bottom:16px; }
 
-# 4) Μήνυμα ενημέρωσης (εμφανίζεται στο run μετά τη διόρθωση)
-note = st.session_state.pop("filing_adjusted_note", None)
-if note:
-    st.info(note)
+/* Κάρτες */
+.card-clean { border:1px solid #e9ecef; border-radius:14px; box-shadow: 0 2px 10px rgba(0,0,0,.03); }
+.card-clean .card-header { background: var(--brand-muted); font-weight:700; }
 
-# «Καθαρή» ημερομηνία για υπολογισμούς (είναι εργάσιμη πλέον)
-sanitized_filing = st.session_state["filing_date_widget"]
+/* Πίνακας προθεσμιών (flex rows) */
+.deadline-row { border-bottom: 1px solid #eef2f7; padding: .55rem .4rem; }
+.deadline-row .row-flex { display:flex; align-items:center; gap: .8rem; }
+.cell-action { flex: 1 1 50%; font-weight: 700; }
+.cell-date   { flex: 0 0 35%; font-weight: 700; white-space: nowrap; }  /* περισσότερο πλάτος + no wrap */
+.cell-buttons{ flex: 0 0 15%; display:flex; gap:.35rem; justify-content:flex-end; }
 
-# Invalidate results on input change
-sig = (abroad, public, procedure, sanitized_filing)
-if "last_sig" not in st.session_state:
-    st.session_state["last_sig"] = sig
-    st.session_state["rows"] = None
-elif st.session_state["last_sig"] != sig:
-    st.session_state["last_sig"] = sig
-    st.session_state["rows"] = None
+/* Micro buttons (chips) – μικρότερα από τα fonts της γραμμής */
+.btn-chip {
+  font-size: 11px; font-weight: 800; padding: .18rem .5rem; border-radius: 9999px;
+  border:1px solid var(--bs-border-color);
+  background: linear-gradient(180deg,#ffffff,#f6f8fa);
+  color:#0a0a0a;
+}
+.btn-chip:hover { background: linear-gradient(180deg,#f2f6ff,#e9f1ff); }
+.btn-chip.calc { border-color:#b6d3ff; }
+.btn-chip.law  { border-color:#d1c4f3; }
 
-# -----------------------------
-# Compute
-# -----------------------------
-compute_pressed = st.button("Υπολογισμός", type="primary")
+/* Εμφάνιση κρυφών panels */
+.panel { background:#fafbfe; border:1px solid #e6e8f0; border-radius: 10px; padding:.6rem .8rem; margin-top:.35rem; }
 
-if compute_pressed:
+/* Header row */
+.header-row { background:#f7f9fc; border-top-left-radius:10px; border-top-right-radius:10px; }
+.header-row .cell-action, .header-row .cell-date { font-weight:800; }
+"""
+
+def ensure_assets_css():
+    try:
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        os.makedirs(assets_dir, exist_ok=True)
+        css_path = os.path.join(assets_dir, "inline.css")
+        write = True
+        if os.path.exists(css_path):
+            try:
+                with open(css_path, "r", encoding="utf-8") as f:
+                    if f.read() == BRAND_CSS:
+                        write = False
+            except Exception:
+                pass
+        if write:
+            with open(css_path, "w", encoding="utf-8") as f:
+                f.write(BRAND_CSS)
+    except Exception:
+        pass
+
+ensure_greek_font_available()
+ensure_assets_css()
+
+# ==========================
+#  Layout
+# ==========================
+controls_card = dbc.Card(
+    dbc.CardBody([
+        html.Div("⚙️ Ρυθμίσεις", className="h5 mb-3"),
+        dbc.Row([
+            dbc.Col([
+                dbc.Label("1) Εναγόμενος εξωτερικού/αγνώστου"),
+                dcc.Dropdown(
+                    id="in-abroad",
+                    options=[{"label":"Όχι","value":"no"},{"label":"Ναι","value":"yes"}],
+                    value="no", clearable=False
+                ),
+            ], md=6),
+            dbc.Col([
+                dbc.Label("2) Υπάρχει Δημόσιο/ΝΠΔΔ διάδικος"),
+                dcc.Dropdown(
+                    id="in-public",
+                    options=[{"label":"Όχι","value":"no"},{"label":"Ναι","value":"yes"}],
+                    value="no", clearable=False
+                ),
+            ], md=6),
+        ], className="g-3"),
+        dbc.Row([
+            dbc.Col([
+                dbc.Label("3) Διαδικασία"),
+                dcc.Dropdown(
+                    id="in-procedure",
+                    options=[{"label":"Τακτική","value":"regular"},{"label":"Μικροδιαφορές","value":"small_claims"}],
+                    value="regular", clearable=False
+                ),
+            ], md=6),
+            dbc.Col([
+                dbc.Label("4) Ημερομηνία κατάθεσης αγωγής"),
+                dcc.DatePickerSingle(
+                    id="in-filing-date",
+                    display_format="DD/MM/YYYY",
+                    date=date.today().strftime("%Y-%m-%d"),
+                ),
+                html.Div(id="filing-note", className="text-secondary mt-1", style={"fontSize":"0.95rem"})
+            ], md=6),
+        ], className="g-3"),
+        html.Hr(),
+        dbc.Row([
+            dbc.Col(dbc.Button("Υπολογισμός", id="btn-compute",
+                               color="primary", className="w-100 fw-bold", size="lg"), md=12),
+        ], className="g-3"),
+        html.Hr(),
+        dbc.Row([
+            dbc.Col(dbc.Input(id="in-client", placeholder="Πελάτης (προαιρετικό)"), md=6),
+            dbc.Col(dbc.Input(id="in-opponent", placeholder="Αντίδικος (προαιρετικό)"), md=6),
+        ], className="g-2"),
+        dbc.Row([
+            dbc.Col(dbc.Button("Αποθήκευση PDF", id="btn-pdf",
+                               color="secondary", className="w-100 mt-2"), md=12),
+        ]),
+    ]),
+    className="card-clean"
+)
+
+results_card = dbc.Card(
+    dbc.CardBody([
+        html.Div("📋 Προθεσμίες", className="h5 mb-3"),
+        html.Div(id="banner", className="text-info mb-2", style={"fontSize":"0.98rem"}),
+        dcc.Store(id="rows-store"),  # σειρές για render & PDF
+        dcc.Store(id="meta-store"),
+        html.Div(id="rows-container"),
+        dcc.Download(id="pdf-download"),
+        html.Div(id="pdf-message", className="text-success mt-2", style={"fontSize":"0.95rem"}),
+    ]),
+    className="card-clean"
+)
+
+app.layout = dbc.Container([
+    html.Br(),
+    html.H2("⚖️ Υπολογισμός Προθεσμιών ΚΠολΔ — Τακτική & Μικροδιαφορές",
+            className="app-title"),
+    html.Div("(Με το νομοθετικό πλαίσιο μέχρι 31-12-2025)", className="app-subtitle"),
+    dbc.Row([
+        dbc.Col(controls_card, md=5),
+        dbc.Col(results_card, md=7),
+    ], className="g-4"),
+    html.Br()
+], fluid=True)
+
+# ==========================
+#  Callbacks
+# ==========================
+@callback(
+    Output("rows-store","data"),
+    Output("meta-store","data"),
+    Output("banner","children"),
+    Output("filing-note","children"),
+    Input("btn-compute","n_clicks"),
+    State("in-abroad","value"),
+    State("in-public","value"),
+    State("in-procedure","value"),
+    State("in-filing-date","date"),
+    prevent_initial_call=True
+)
+def compute_deadlines(n_clicks, abroad_val, public_val, procedure_val, filing_date_str):
+    """Υπολογισμός προθεσμιών. Αν η επιλεγμένη κατάθεση είναι Σ/Κ, μεταφέρεται στη Δευτέρα
+    και εμφανίζεται ενημερωτικό μήνυμα."""
+    if not filing_date_str:
+        return no_update, no_update, "Βάλε ημερομηνία κατάθεσης.", no_update
+
+    filing = parse_date_str(filing_date_str)
+    adjusted_note = ""
+    if filing.weekday() >= 5:
+        adj = next_monday(filing)
+        adjusted_note = f"Επιλέχθηκε Σ/Κ· η ημερομηνία κατάθεσης μεταφέρθηκε αυτόματα στη Δευτέρα {adj.strftime('%d-%m-%Y')}."
+        filing = adj
+
+    abroad = (abroad_val == "yes")
+    public = (public_val == "yes")
+
     ctx = RuleContext(
-        filing_date=sanitized_filing,
+        filing_date=filing,
         defendant_abroad_or_unknown=abroad,
         public_entity_party=public,
-        procedure="regular" if procedure=="Τακτική" else "small_claims",
+        procedure=procedure_val
     )
     calc = DeadlineCalculator(ctx)
-    rows_full = calc.compute()
-    # Κόβουμε οριστικά τις 2 τελευταίες γραμμές (και από πίνακα και από PDF)
-    rows = rows_full[:-2] if len(rows_full) >= 2 else rows_full
-    st.session_state["rows"] = rows
-else:
-    rows = st.session_state.get("rows", None)
+    all_rows = calc.compute()
 
-# -----------------------------
-# Helpers (κειμενικά)
-# -----------------------------
-def _explain_calc_text(it, rows_all):
-    lb = it.legal_basis
-    end_str = it.deadline.strftime("%d-%m-%Y")
-    weekday = it.weekday
-    if "215" in lb:
-        n = 60 if abroad else 30
-        return f"Από την κατάθεση ({sanitized_filing:%d-%m-%Y}) + **{n} ημέρες**, εξαιρώντας **Αύγουστο**{', και **1/7–15/9**' if public else ''}. Αν πέσει Σ/Κ, μεταφορά σε εργάσιμη. Τελική: **{weekday} {end_str}**."
-    if lb.startswith("ΚΠολΔ 237") and "§2" not in lb:
-        n = 120 if abroad else 90
-        service = rows_all[0].deadline
-        return f"Από τη **λήξη επίδοσης** ({service:%d-%m-%Y}) + **{n} ημέρες**, ίδιες εξαιρέσεις· **λήξη 12:00**. Τελική: **{weekday} {end_str}**."
-    if "237 §2" in lb:
-        return f"**+15 ημέρες** από την προθεσμία προτάσεων ({rows_all[1].deadline:%d-%m-%Y}); **λήξη 12:00**. Τελική: **{weekday} {end_str}**."
-    if "238 §1" in lb and "τελ" not in lb:
-        n = 90 if abroad else 60
-        return f"Παρεμπίπτουσες: από **κατάθεση** ({sanitized_filing:%d-%m-%Y}) + **{n} ημέρες**. Τελική: **{weekday} {end_str}**."
-    if "468 §1" in lb:
-        n = 30 if abroad else 10
-        return f"Μικροδιαφορές: από κατάθεση ({sanitized_filing:%d-%m-%Y}) + **{n} ημέρες**. Τελική: **{weekday} {end_str}**."
-    if "468 §2" in lb and "Υπόμνημα" in it.action:
-        return f"Μικροδιαφορές: **20 ημέρες** από τη **λήξη επίδοσης** ({rows_all[0].deadline:%d-%m-%Y}). Τελική: **{weekday} {end_str}**."
-    if "468 §2" in lb and "Προσθήκη" in it.action:
-        return f"Μικροδιαφορές: **+5 ημέρες** από το 20ήμερο ({rows_all[1].deadline:%d-%m-%Y}). Τελική: **{weekday} {end_str}**."
-    if "468 §3" in lb and "κατάθεση" in it.action:
-        n = 40 if abroad else 20
-        return f"Μικροδιαφορές — παρεμπίπτουσες: από κατάθεση ({sanitized_filing:%d-%m-%Y}) + **{n} ημέρες**. Τελική: **{weekday} {end_str}**."
-    return f"Υπολογισμός βάσει **{lb}**. Τελική: **{weekday} {end_str}**."
+    # Αφαιρούμε τις 2 τελευταίες, όπως είχες ζητήσει παλαιότερα
+    rows = all_rows[:-2] if len(all_rows) >= 2 else all_rows
 
-def _law_text(it):
-    lb = it.legal_basis
-    if "215" in lb:
-        return "ΚΠολΔ **215 §2** — Επίδοση αγωγής εντός **30** ημερών (**60** αν εξωτερικού/αγνώστου). Μη εμπρόθεσμη επίδοση: αγωγή **μη ασκηθείσα**."
-    if lb.startswith("ΚΠολΔ 237") and "§2" not in lb:
-        return "ΚΠολΔ **237** — Προτάσεις & αποδεικτικά **90** ημέρες (**120** αν εξωτερικού/αγνώστου) **από τη λήξη της προθεσμίας επίδοσης**. Λήξη **12:00**."
-    if "237 §2" in lb:
-        return "ΚΠολΔ **237 §2** — **Προσθήκη–αντίκρουση** **15** ημέρες μετά την προθεσμία προτάσεων. Λήξη **12:00**."
-    if "238 §1" in lb and "τελ" not in lb:
-        return "ΚΠολΔ **238 §1** — Παρεμπίπτουσες: κατάθεση & επίδοση **60** ημέρες (**90** αν εξωτερικού/αγνώστου) από **κατάθεση αγωγής**."
-    if "468 §1" in lb:
-        return "ΚΠολΔ **468 §1** — Επίδοση αγωγής μικροδιαφορών **10** ημέρες (**30** αν εξωτερικού/αγνώστου) από κατάθεση."
-    if "468 §2" in lb and "Υπόμνημα" in it.action:
-        return "ΚΠολΔ **468 §2** — **Υπόμνημα εναγομένου & αποδεικτικά** **20** ημέρες από τη **λήξη προθεσμίας επίδοσης**."
-    if "468 §2" in lb and "Προσθήκη" in it.action:
-        return "ΚΠολΔ **468 §2** — **Προσθήκη–αντίκρουση** **5** ημέρες μετά το 20ήμερο."
-    if "468 §3" in lb and "κατάθεση" in it.action:
-        return "ΚΠολΔ **468 §3** — Παρεμπίπτουσες: κατάθεση & επίδοση **20** ημέρες (**40** αν εξωτερικού/αγνώστου) από κατάθεση."
-    return f"Σχετική νομοθεσία: **{lb}**."
+    def rename_action(a: str) -> str:
+        low = a.lower()
+        if "προτάσε" in low: return "Κατάθεση Προτάσεων"
+        if "προσθήκ" in low: return "Κατάθεση Προσθήκης-Αντίκρουσης"
+        if "παρεμπίπτουσ" in low: return "Άσκηση Παρέμβασης, Ανταγωγής κτλ"
+        return a
 
-# -----------------------------
-# Full list για επεξηγήσεις (δεν κόβουμε εδώ)
-# -----------------------------
-def _compute_full_for_explanations():
-    ctx_tmp = RuleContext(
-        filing_date=sanitized_filing,
-        defendant_abroad_or_unknown=abroad,
-        public_entity_party=public,
-        procedure="regular" if procedure=="Τακτική" else "small_claims",
+    def explain_calc(it, rows_all):
+        lb = it.legal_basis
+        end_str = it.deadline.strftime("%d-%m-%Y")
+        wd = weekday_gr(it.deadline)
+        if "215" in lb:
+            n = 60 if abroad else 30
+            extra = ", και 1/7–15/9" if public else ""
+            return f"Από την κατάθεση ({filing:%d-%m-%Y}) + {n} ημέρες, εξαιρώντας Αύγουστο{extra}. Μεταφορά αν Σ/Κ. Τελική: {wd} {end_str}."
+        if lb.startswith("ΚΠολΔ 237") and "§2" not in lb:
+            n = 120 if abroad else 90
+            service = rows_all[0].deadline
+            return f"Από τη λήξη επίδοσης ({service:%d-%m-%Y}) + {n} ημέρες (λήξη 12:00). Τελική: {wd} {end_str}."
+        if "237 §2" in lb:
+            return f"+15 ημέρες από την προθεσμία προτάσεων ({rows_all[1].deadline:%d-%m-%Y}) (λήξη 12:00). Τελική: {wd} {end_str}."
+        if "238 §1" in lb and "τελ" not in lb:
+            n = 90 if abroad else 60
+            return f"Παρεμπίπτουσες: από κατάθεση ({filing:%d-%m-%Y}) + {n} ημέρες. Τελική: {wd} {end_str}."
+        if "468 §1" in lb:
+            n = 30 if abroad else 10
+            return f"Μικροδιαφορές: από κατάθεση ({filing:%d-%m-%Y}) + {n} ημέρες. Τελική: {wd} {end_str}."
+        if "468 §2" in lb and "Υπόμνημα" in it.action:
+            return f"Μικροδιαφορές: 20 ημέρες από λήξη επίδοσης ({rows_all[0].deadline:%d-%m-%Y}). Τελική: {wd} {end_str}."
+        if "468 §2" in lb and "Προσθήκη" in it.action:
+            return f"Μικροδιαφορές: +5 ημέρες από το 20ήμερο ({rows_all[1].deadline:%d-%m-%Y}). Τελική: {wd} {end_str}."
+        if "468 §3" in lb and "κατάθεση" in it.action:
+            n = 40 if abroad else 20
+            return f"Μικροδιαφορές — παρεμπίπτουσες: από κατάθεση ({filing:%d-%m-%Y}) + {n} ημέρες. Τελική: {wd} {end_str}."
+        return f"Υπολογισμός βάσει {lb}. Τελική: {wd} {end_str}."
+
+    def law_text(it):
+        lb = it.legal_basis
+        if "215" in lb:
+            return "ΚΠολΔ 215 §2 — Επίδοση αγωγής εντός 30 ημερών (60 αν εξωτερικού/αγνώστου)."
+        if lb.startswith("ΚΠολΔ 237") and "§2" not in lb:
+            return "ΚΠολΔ 237 — Προτάσεις & αποδεικτικά 90 ημέρες (120 αν εξωτερικού/αγνώστου) από τη λήξη προθεσμίας επίδοσης. Λήξη 12:00."
+        if "237 §2" in lb:
+            return "ΚΠολΔ 237 §2 — Προσθήκη–αντίκρουση 15 ημέρες μετά την προθεσμία προτάσεων. Λήξη 12:00."
+        if "238 §1" in lb and "τελ" not in lb:
+            return "ΚΠολΔ 238 §1 — Παρεμπίπτουσες: κατάθεση & επίδοση 60 ημέρες (90 αν εξωτερικού/αγνώστου) από κατάθεση αγωγής."
+        if "468 §1" in lb:
+            return "ΚΠολΔ 468 §1 — Επίδοση αγωγής μικροδιαφορών 10 ημέρες (30 αν εξωτερικού/αγνώστου) από κατάθεση."
+        if "468 §2" in lb and "Υπόμνημα" in it.action:
+            return "ΚΠολΔ 468 §2 — Υπόμνημα εναγομένου & αποδεικτικά 20 ημέρες από τη λήξη προθεσμίας επίδοσης."
+        if "468 §2" in lb and "Προσθήκη" in it.action:
+            return "ΚΠολΔ 468 §2 — Προσθήκη–αντίκρουση 5 ημέρες μετά το 20ήμερο."
+        if "468 §3" in lb and "κατάθεση" in it.action:
+            return "ΚΠολΔ 468 §3 — Παρεμπίπτουσες: κατάθεση & επίδοση 20 ημέρες (40 αν εξωτερικού/αγνώστου) από κατάθεση."
+        return f"Σχετική νομοθεσία: {lb}."
+
+    rows_out = []
+    for idx, it in enumerate(rows, start=1):
+        rows_out.append({
+            "idx": idx,
+            "action": rename_action(it.action),
+            "legal_basis": it.legal_basis,
+            "deadline_iso": it.deadline.isoformat(),
+            "deadline_str": f"{weekday_gr(it.deadline)} {it.deadline.strftime('%d-%m-%Y')}",
+            "calc_text": explain_calc(it, all_rows),
+            "law_text": law_text(it),
+        })
+
+    banner = f"Υπολογισμός ολοκληρώθηκε για Ημερ. κατάθεσης {filing.strftime('%d-%m-%Y')}" if rows_out else "Δεν προέκυψαν προθεσμίες."
+    filing_note = adjusted_note if adjusted_note else ""
+
+    meta = {
+        "filing": filing.strftime("%d-%m-%Y"),
+        "procedure": "Τακτική" if procedure_val=="regular" else "Μικροδιαφορές",
+        "abroad": "Ναι" if abroad else "Όχι",
+        "public": "Ναι" if public else "Όχι",
+    }
+    return rows_out, meta, banner, filing_note
+
+
+@callback(
+    Output("rows-container","children"),
+    Input("rows-store","data"),
+)
+def render_rows(rows):
+    if not rows:
+        return html.Div("Πατήστε «Υπολογισμός» για να εμφανιστούν προθεσμίες.", style={"color":"#555"})
+    out = []
+    # header row
+    out.append(
+        html.Div(className="deadline-row header-row", children=[
+            html.Div(className="row-flex", children=[
+                html.Div("ΕΝΕΡΓΕΙΕΣ", className="cell-action"),
+                html.Div("ΠΡΟΘΕΣΜΙΕΣ", className="cell-date"),
+                html.Div("", className="cell-buttons"),
+            ])
+        ])
     )
-    return DeadlineCalculator(ctx_tmp).compute()
+    # data rows
+    for r in rows:
+        i = r["idx"]
+        out.append(
+            html.Div([
+                html.Div(className="row-flex", children=[
+                    html.Div(f"{i}. {r['action']}", className="cell-action"),
+                    html.Div(r["deadline_str"], className="cell-date"),
+                    html.Div(className="cell-buttons", children=[
+                        dbc.Button("🧮 Τρόπος Υπολογισμού", id={"type":"calc-btn","index":i},
+                                   className="btn-chip calc", n_clicks=0),
+                        dbc.Button("📜 Νομική Βάση", id={"type":"law-btn","index":i},
+                                   className="btn-chip law", n_clicks=0),
+                    ])
+                ]),
+                html.Div(r["calc_text"], id={"type":"calc-panel","index":i},
+                         className="panel", style={"display":"none"}),
+                html.Div(r["law_text"], id={"type":"law-panel","index":i},
+                         className="panel", style={"display":"none"}),
+            ], className="deadline-row")
+        )
+    return out
 
-# -----------------------------
-# Results table
-# -----------------------------
-if not rows:
-    st.info("Πατήστε **Υπολογισμός** για να υπολογιστούν οι προθεσμίες.")
-else:
-    st.success("Υπολογισμός ολοκληρώθηκε.")
-    # Headers: ΕΝΕΡΓΕΙΕΣ | ΠΡΟΘΕΣΜΙΕΣ | [Τρόπος] | [Νομική Βάση]
-    hdr = st.columns([6, 3, 2, 2])
-    with hdr[0]: st.markdown("**ΕΝΕΡΓΕΙΕΣ**")
-    with hdr[1]: st.markdown("**ΠΡΟΘΕΣΜΙΕΣ**")
-    with hdr[2]: st.markdown("&nbsp;", unsafe_allow_html=True)
-    with hdr[3]: st.markdown("&nbsp;", unsafe_allow_html=True)
 
-    rows_full_for_calc = _compute_full_for_explanations()
+# Toggle panels
+@callback(
+    Output({"type":"calc-panel","index":MATCH}, "style"),
+    Input({"type":"calc-btn","index":MATCH}, "n_clicks"),
+    prevent_initial_call=True
+)
+def toggle_calc_panel(n):
+    opened = n and (n % 2 == 1)
+    return {"display":"block"} if opened else {"display":"none"}
 
-    for i, it in enumerate(rows):
-        disp_action = it.action
-        if "προτάσε" in disp_action.lower(): disp_action = "Κατάθεση Προτάσεων"
-        if "προσθήκ" in disp_action.lower(): disp_action = "Κατάθεση Προσθήκης-Αντίκρουσης"
-        if "παρεμπίπτουσ" in disp_action.lower(): disp_action = "Άσκηση Παρέμβασης, Ανταγωγής κτλ"
 
-        # Ενεργές καταστάσεις για styling (όταν είναι ανοιχτές οι εξηγήσεις)
-        calc_open = st.session_state.get(f"show_calc_{i}", False)
-        law_open  = st.session_state.get(f"show_law_{i}", False)
+@callback(
+    Output({"type":"law-panel","index":MATCH}, "style"),
+    Input({"type":"law-btn","index":MATCH}, "n_clicks"),
+    prevent_initial_call=True
+)
+def toggle_law_panel(n):
+    opened = n and (n % 2 == 1)
+    return {"display":"block"} if opened else {"display":"none"}
 
-        row = st.columns([6, 3, 2, 2], vertical_alignment="center")
-        with row[0]:
-            st.markdown(f"**{i+1}. {disp_action}**")
-        with row[1]:
-            st.markdown(f"**{it.weekday} {it.deadline:%d-%m-%Y}**")
 
-        # --- Creative "chip" κουμπί Τρόπος Υπολογισμού (αριστερά)
-        with row[2]:
-            st.markdown(
-                f'<div class="chip-col chip-col--left chip-calc {"active" if calc_open else ""}">',
-                unsafe_allow_html=True
-            )
-            if st.button("🧮 Τρόπος Υπολογισμού", key=f"calc_btn_{i}", help="Δείξε/κρύψε τον τρόπο υπολογισμού"):
-                st.session_state[f"show_calc_{i}"] = not calc_open
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # --- Creative "chip" κουμπί Νομική Βάση (δεξιά)
-        with row[3]:
-            st.markdown(
-                f'<div class="chip-col chip-col--right chip-law {"active" if law_open else ""}">',
-                unsafe_allow_html=True
-            )
-            if st.button("📜 Νομική Βάση", key=f"law_btn_{i}", help="Δείξε/κρύψε τη νομική βάση"):
-                st.session_state[f"show_law_{i}"] = not law_open
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # Περιοχή επεξηγήσεων (ανοίγει κάτω από τη γραμμή)
-        if st.session_state.get(f"show_calc_{i}", False) or st.session_state.get(f"show_law_{i}", False):
-            with st.container():
-                if st.session_state.get(f"show_calc_{i}", False):
-                    st.info(_explain_calc_text(it, rows_full_for_calc), icon="ℹ️")
-                if st.session_state.get(f"show_law_{i}", False):
-                    st.code(_law_text(it), language="markdown")
-        st.markdown("<hr/>", unsafe_allow_html=True)
-
-# -----------------------------
-# PDF (ΜΟΝΟ τα εμφανιζόμενα rows)
-# -----------------------------
-st.subheader("📄 Εξαγωγή σε PDF (μόνο αποθήκευση σε Downloads)")
-client = st.text_input("Πελάτης (προαιρετικό)", key="client_input")
-opponent = st.text_input("Αντίδικος (προαιρετικό)", key="opponent_input")
-
-def _make_pdf_custom(path: str, title: str, meta: dict, rows_list):
+# --------- PDF export ----------
+def build_pdf_bytes(title: str, meta: dict, rows_list: list) -> bytes:
+    """Φτιάχνει PDF σε bytes (και γράφει και σε ~/Downloads)."""
     from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
-    import os
+
+    buf = io.BytesIO()
 
     font_name = "DejaVuSans"
     try:
@@ -382,7 +449,7 @@ def _make_pdf_custom(path: str, title: str, meta: dict, rows_list):
     except Exception:
         font_name = "Helvetica"
 
-    c = canvas.Canvas(path, pagesize=A4)
+    c = canvas.Canvas(buf, pagesize=A4)
     width, height = A4
     margin = 16 * mm
     x = margin
@@ -401,87 +468,85 @@ def _make_pdf_custom(path: str, title: str, meta: dict, rows_list):
     c.drawString(x, y, f"Εναγόμενος Εξωτερικού/Αγνώστου: {meta.get('abroad','-')}"); y -= 6 * mm
     c.drawString(x, y, f"Διάδικος Δημόσιο: {meta.get('public','-')}"); y -= 10 * mm
 
+    # Πλάτη πίνακα
     headers = ["#", "ΕΝΕΡΓΕΙΕΣ", "Νομική Βάση", "ΠΡΟΘΕΣΜΙΕΣ"]
-    col_widths = [10*mm, 88*mm, 35*mm, 45*mm]
+    col_widths = [10*mm, 80*mm, 33*mm, 55*mm]
 
     c.setFont(font_name, 12)
     c.rect(x, y-8*mm, sum(col_widths), 8*mm, stroke=1, fill=0)
     cx = x + 2
     for i, h in enumerate(headers):
-        c.drawString(cx, y-6*mm, h)
-        cx += col_widths[i]
+        c.drawString(cx, y-6*mm, h); cx += col_widths[i]
     y -= 8*mm
 
     c.setFont(font_name, 11)
-    for idx, it in enumerate(rows_list, start=1):
+    for row in rows_list:
         if y < margin + 25*mm:
             c.showPage(); y = height - margin
             c.setFont(font_name, 12)
             c.rect(x, y-8*mm, sum(col_widths), 8*mm, stroke=1, fill=0)
             cx = x + 2
             for i, h in enumerate(headers):
-                c.drawString(cx, y-6*mm, h)
-                cx += col_widths[i]
+                c.drawString(cx, y-6*mm, h); cx += col_widths[i]
             y -= 8*mm
             c.setFont(font_name, 11)
+
         c.rect(x, y-12*mm, sum(col_widths), 12*mm, stroke=1, fill=0)
         cx = x + 2
-
-        disp_action = it.action
-        if "προτάσε" in disp_action.lower(): disp_action = "Κατάθεση Προτάσεων"
-        if "προσθήκ" in disp_action.lower(): disp_action = "Κατάθεση Προσθήκης-Αντίκρουσης"
-        if "παρεμπίπτουσ" in disp_action.lower(): disp_action = "Άσκηση Παρέμβασης, Ανταγωγής κτλ"
-
-        vals = [
-            str(idx),
-            disp_action,
-            it.legal_basis,
-            f"{it.weekday} {it.deadline.strftime('%d-%m-%Y')}",
-        ]
+        vals = [str(row["idx"]), row["action"], row["legal_basis"], row["deadline_str"]]
         for i, v in enumerate(vals):
-            c.drawString(cx, y-8*mm, v[:80])
-            cx += col_widths[i]
+            c.drawString(cx, y-8*mm, (v or "")[:110]); cx += col_widths[i]
         y -= 12*mm
 
     c.setFont(font_name, 9)
-    c.drawString(x, margin, "Generated with Greek Civil Deadlines Web App")
+    c.drawString(x, margin, "Generated with Greek Civil Deadlines — Dash App")
     c.save()
 
-if st.button("Αποθήκευση PDF στο Downloads"):
-    rows = st.session_state.get("rows", None)
-    if not rows:
-        st.warning("Δεν υπάρχουν αποτελέσματα. Πάτησε πρώτα **Υπολογισμός**.")
-    else:
-        pdf_items = []
-        for idx, it in enumerate(rows, start=1):
-            pdf_items.append(DeadlineItem(idx, it.action, it.legal_basis, it.deadline, it.weekday, ""))
+    data = buf.getvalue()
+    buf.close()
 
+    # γράψε και στο ~/Downloads (αν υπάρχει)
+    try:
         downloads = os.path.expanduser("~/Downloads")
         os.makedirs(downloads, exist_ok=True)
-        client = st.session_state.get("client_input", "")
-        opponent = st.session_state.get("opponent_input", "")
-        fname = f"Προθεσμίες Αγωγής {client.strip() or 'Χωρίς_Όνομα'} vs {opponent.strip() or 'Χωρίς_Όνομα'}.pdf"
-        path = os.path.join(downloads, fname)
+        # --- ΝΕΟ ΟΝΟΜΑ ---
+        fname = f"Προθεσμίες {meta.get('client','Χωρίς_Όνομα')} vs {meta.get('opponent','Χωρίς_Όνομα')}.pdf"
+        with open(os.path.join(downloads, fname), "wb") as f:
+            f.write(data)
+    except Exception:
+        pass
 
-        meta = {
-            "client": client,
-            "opponent": opponent,
-            "filing": sanitized_filing.strftime("%d-%m-%Y"),
-            "procedure": procedure,
-            "abroad": "Ναι" if abroad else "Όχι",
-            "public": "Ναι" if public else "Όχι",
-        }
-        _make_pdf_custom(path, "Πίνακας Προθεσμιών", meta, pdf_items)
+    return data
 
-        st.success(f"Το PDF αποθηκεύτηκε στον φάκελο **Downloads** ως: `{fname}`")
-        st.info(f"Πλήρης διαδρομή: `{path}`")
 
-# -----------------------------
-# PyCharm bootstrap guard (τρέχει αυτόματα Streamlit)
-# -----------------------------
+@callback(
+    Output("pdf-download","data"),
+    Output("pdf-message","children"),
+    Input("btn-pdf","n_clicks"),
+    State("rows-store","data"),
+    State("meta-store","data"),
+    State("in-client","value"),
+    State("in-opponent","value"),
+    prevent_initial_call=True
+)
+def export_pdf(n_clicks, rows, meta, client, opponent):
+    if not rows:
+        return no_update, "Δεν υπάρχουν αποτελέσματα. Πάτησε πρώτα «Υπολογισμός»."
+    meta = dict(meta or {})
+    meta["client"] = (client or "").strip() or "Χωρίς_Όνομα"
+    meta["opponent"] = (opponent or "").strip() or "Χωρίς_Όνομα"
+
+    data = build_pdf_bytes("Πίνακας Προθεσμιών", meta, rows)
+    # --- ΝΕΟ ΟΝΟΜΑ ---
+    filename = f"Προθεσμίες {meta['client']} vs {meta['opponent']}.pdf"
+    # --- ΝΕΟ ΜΗΝΥΜΑ ---
+    msg = f'Το PDF αποθηκεύτηκε στον φάκελο Downloads με όνομα αρχείου: "{filename}".'
+    return dcc.send_bytes(lambda b: b.write(data), filename=filename), msg
+
+
+# ==========================
+#  Main (τοπική εκτέλεση)
+# ==========================
 if __name__ == "__main__":
-    if (os.environ.get("STREAMLIT_BOOTSTRAPPED") != "1") and all("streamlit" not in arg for arg in sys.argv):
-        os.environ["STREAMLIT_BOOTSTRAPPED"] = "1"
-        from streamlit.web import cli as stcli
-        sys.argv = ["streamlit", "run", os.path.abspath(__file__)]
-        stcli.main()
+    # Τοπικά: με BASE_PATH="/", άνοιξε http://127.0.0.1:8050/
+    app.run(debug=False, host="127.0.0.1", port=8050)
