@@ -1,0 +1,55 @@
+
+:root{
+  /* Προσαρμογή για το ziamparas.gr – άλλαξε εδώ αν έχεις συγκεκριμένα hex */
+  --brand-primary: #1f3b73;    /* deep blue */
+  --brand-primary-dark: #152a54;
+  --brand-accent:  #5fa8ff;    /* light accent */
+  --brand-muted:   #f2f6fc;    /* light background */
+}
+
+/* Βασικά */
+body { font-size: 18px; background: #ffffff; }
+.container-fluid { max-width: 1280px; }
+
+/* Bootstrap primary override */
+.btn-primary {
+  background-color: var(--brand-primary) !important;
+  border-color: var(--brand-primary) !important;
+}
+.btn-primary:hover {
+  background-color: var(--brand-primary-dark) !important;
+  border-color: var(--brand-primary-dark) !important;
+}
+
+/* Κεφαλίδα */
+.app-title { font-weight: 800; line-height: 1.15; letter-spacing: .2px; }
+.app-subtitle { font-size: 0.98rem; color:#4b5563; margin-top:-8px; margin-bottom:16px; }
+
+/* Κάρτες */
+.card-clean { border:1px solid #e9ecef; border-radius:14px; box-shadow: 0 2px 10px rgba(0,0,0,.03); }
+.card-clean .card-header { background: var(--brand-muted); font-weight:700; }
+
+/* Πίνακας προθεσμιών (flex rows) */
+.deadline-row { border-bottom: 1px solid #eef2f7; padding: .55rem .4rem; }
+.deadline-row .row-flex { display:flex; align-items:center; gap: .8rem; }
+.cell-action { flex: 1 1 50%; font-weight: 700; }
+.cell-date   { flex: 0 0 35%; font-weight: 700; white-space: nowrap; }  /* περισσότερο πλάτος + no wrap */
+.cell-buttons{ flex: 0 0 15%; display:flex; gap:.35rem; justify-content:flex-end; }
+
+/* Micro buttons (chips) – μικρότερα από τα fonts της γραμμής */
+.btn-chip {
+  font-size: 11px; font-weight: 800; padding: .18rem .5rem; border-radius: 9999px;
+  border:1px solid var(--bs-border-color);
+  background: linear-gradient(180deg,#ffffff,#f6f8fa);
+  color:#0a0a0a;
+}
+.btn-chip:hover { background: linear-gradient(180deg,#f2f6ff,#e9f1ff); }
+.btn-chip.calc { border-color:#b6d3ff; }
+.btn-chip.law  { border-color:#d1c4f3; }
+
+/* Εμφάνιση κρυφών panels */
+.panel { background:#fafbfe; border:1px solid #e6e8f0; border-radius: 10px; padding:.6rem .8rem; margin-top:.35rem; }
+
+/* Header row */
+.header-row { background:#f7f9fc; border-top-left-radius:10px; border-top-right-radius:10px; }
+.header-row .cell-action, .header-row .cell-date { font-weight:800; }
